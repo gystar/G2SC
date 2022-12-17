@@ -23,6 +23,7 @@ import models.jointemb, configs, data_loader
 from modules import get_cosine_schedule_with_warmup
 from utils import similarity, normalize
 from data_loader import *
+from models.jointemb import JointEmbeder
 
 try:
     import nsml
@@ -127,7 +128,7 @@ def train(rank, args):
     # Define Model
     ###############################################################################
     logger.info("Constructing Model..")
-    module = getattr(models.jointemb, args.model)(config)
+    module = JointEmbeder(config)
     module.cuda()
     model_dist = nn.parallel.DistributedDataParallel(module, device_ids=[rank])
 
