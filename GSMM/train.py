@@ -51,8 +51,6 @@ def bind_nsml(model, **kwargs):
 
 
 def distributed_train(args):
-    # os.environ["MASTER_ADDR"] = "10.57.23.164"  #
-    # os.environ["MASTER_PORT"] = "8888"  #
     mp.spawn(train, nprocs=args.world_size, args=(args,))  #
 
 
@@ -60,7 +58,7 @@ def train(rank, args):
     torch.cuda.set_device(rank)
     dist.init_process_group(
         backend="nccl",
-        init_method="tcp://127.0.0.1:2345",
+        init_method=f"tcp://127.0.0.1:{args.distributed_port}",
         world_size=args.world_size,
         rank=rank,
     )
@@ -177,12 +175,12 @@ def train(rank, args):
         lr=config["learning_rate"],
         eps=config["adam_epsilon"],
     )
-    print(" len(train_loader)", len(train_loader))
+
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=config["warmup_steps"],
         num_training_steps=int(
-            len(train_loader) * config["nb_epoch"]
+            len(train_loader) * config["nb_epoch"] / args.world_size
         ),
     )  # do not foget to modify the number when dataset is changed
     if config["fp16"]:
@@ -223,52 +221,59 @@ def train(rank, args):
 
             losses.append(loss.item())
 
-            if itr_global % args.log_every == 0:
-                elapsed = time.time() - itr_start_time
-                logger.info(
-                    "epo:[%d/%d] itr:[%d/%d] step_time:%ds Loss=%.5f"
-                    % (
-                        epoch,
-                        config["nb_epoch"],
-                        itr_global % n_iters,
-                        n_iters,
-                        elapsed,
-                        np.mean(losses),
+            if rank == 0:
+                if itr_global % args.log_every == 0:
+                    elapsed = time.time() - itr_start_time
+                    logger.info(
+                        "epo:[%d/%d] itr:[%d/%d] step_time:%ds Loss=%.5f"
+                        % (
+                            epoch,
+                            config["nb_epoch"],
+                            itr_global % n_iters,
+                            n_iters,
+                            elapsed,
+                            np.mean(losses),
+                        )
                     )
-                )
-                if tb_writer is not None:
-                    tb_writer.add_scalar("loss", np.mean(losses), itr_global)
-                if IS_ON_NSML:
-                    summary = {"summary": True, "scope": locals(), "step": itr_global}
-                    summary.update({"loss": np.mean(losses)})
-                    nsml.report(**summary)
+                    if tb_writer is not None:
+                        tb_writer.add_scalar("loss", np.mean(losses), itr_global)
+                    if IS_ON_NSML:
+                        summary = {
+                            "summary": True,
+                            "scope": locals(),
+                            "step": itr_global,
+                        }
+                        summary.update({"loss": np.mean(losses)})
+                        nsml.report(**summary)
 
-                losses = []
-                itr_start_time = time.time()
-            itr_global = itr_global + 1
+                    losses = []
+                    itr_start_time = time.time()
+                itr_global = itr_global + 1
 
-            if itr_global % args.valid_every == 0:
-                logger.info("validating..")
-                valid_result = validate(
-                    valid_set, model_dist, 1000, 10, config["sim_measure"]
-                )
-                logger.info(valid_result)
-                if tb_writer is not None:
-                    for key, value in valid_result.items():
-                        tb_writer.add_scalar(key, value, itr_global)
-                if IS_ON_NSML:
-                    summary = {"summary": True, "scope": locals(), "step": itr_global}
-                    summary.update(valid_result)
-                    nsml.report(**summary)
+                if itr_global % args.valid_every == 0:
+                    logger.info("validating..")
+                    valid_result = validate(
+                        valid_set, model_dist.module, 1000, 10, config["sim_measure"]
+                    )
+                    logger.info(valid_result)
+                    if tb_writer is not None:
+                        for key, value in valid_result.items():
+                            tb_writer.add_scalar(key, value, itr_global)
+                    if IS_ON_NSML:
+                        summary = {
+                            "summary": True,
+                            "scope": locals(),
+                            "step": itr_global,
+                        }
+                        summary.update(valid_result)
+                        nsml.report(**summary)
 
-            if itr_global % args.save_every == 0:
-                ckpt_path = (
-                    f"./output/{args.model}/{args.dataset}/models/step{itr_global}.h5"
-                )
-                if rank == 0:
+                if itr_global % args.save_every == 0:
+                    ckpt_path = f"./output/{args.model}/{args.dataset}/models/step{itr_global}.h5"
                     save_model(model_dist.module, ckpt_path)
-                if IS_ON_NSML:
-                    nsml.save(checkpoint=f"model_step{itr_global}")
+                    if IS_ON_NSML:
+                        nsml.save(checkpoint=f"model_step{itr_global}")
+
             if itr_global == 310000:
                 sys.exit(0)
 
@@ -408,6 +413,13 @@ def parse_args():
         help="distributed world size",
     )
     parser.add_argument(
+        "-dp",
+        "--distributed_port",
+        type=int,
+        default=2345,
+        help="distributed master port",
+    )
+    parser.add_argument(
         "-v",
         "--visual",
         action="store_true",
@@ -425,7 +437,7 @@ def parse_args():
         help="interval to log autoencoder training results",
     )
     parser.add_argument(
-        "--valid_every", type=int, default=5000, help="interval to validation"
+        "--valid_every", type=int, default=500, help="interval to validation"
     )
     parser.add_argument(
         "--save_every",
@@ -433,7 +445,7 @@ def parse_args():
         default=10000,
         help="interval to evaluation to concrete results",
     )
-    parser.add_argument("--seed", type=int, default=1111, help="random seed")
+    parser.add_argument("--seed", type=int, default=500, help="random seed")
 
     parser.add_argument(
         "--local_rank",
