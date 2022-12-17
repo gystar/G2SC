@@ -220,7 +220,7 @@ def train(rank, args):
             scheduler.step()
             model_dist.zero_grad()
 
-            losses.append(loss.item())
+            losses.append(loss.cpu().item())
 
             if rank == 0:
                 if itr_global % args.log_every == 0:
@@ -277,6 +277,8 @@ def train(rank, args):
 
             if itr_global == 310000:
                 sys.exit(0)
+        del losses
+        torch.cuda.empty_cache()
 
 
 ##### Evaluation #####

@@ -39,7 +39,7 @@ def config_codesearchnet():
         'vocab_graphseq':'vocab.graphseq.json', 
 		
         #training_params            
-        'batch_size':1024,
+        'batch_size':768,
         'chunk_size':200000,
         'nb_epoch': 2000,
 		
